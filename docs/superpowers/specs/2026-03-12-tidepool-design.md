@@ -22,17 +22,17 @@ Each creature is defined by a genome of 5 parameters:
 3. Steer toward/away from neighbors (weighted by sociability)
 4. Add slight random wander
 5. Move, deduct energy (base cost + speed^2 * size)
-6. If overlapping food particle, consume it (gain energy proportional to size)
-7. If energy > reproduction threshold: split into two, each child gets half energy, genome mutates slightly (gaussian noise, sigma ~5% of range per gene)
-8. If energy <= 0: die, spawn burst of food particles equal to creature's remaining size
+6. If overlapping food particle, consume it (gain energy = particle's value * size/4, so bigger creatures extract more per particle)
+7. If energy > reproduction threshold (100): split into two, each child gets half energy, genome mutates slightly (gaussian noise, sigma ~5% of range per gene)
+8. If energy <= 0: die, spawn food particles equal to floor(Size gene) at death location (so size 2–6 creatures drop 2–6 particles)
 
-**Initial population:** ~50 creatures with randomized genomes.
+**Initial population:** ~50 creatures with randomized genomes, each starting at 60 energy.
 
 ### Food Particles
 
 - Tiny dots (1–2px), dim white, slight drift
 - Ambient spawn: ~2 particles/frame at random positions
-- Dead creatures release 3–8 food particles at death location
+- Dead creatures release food particles equal to their Size gene (2–6 particles)
 - Click interaction: drop cluster of ~20 food particles at cursor
 
 ### Energy Economy
@@ -68,10 +68,10 @@ Bottom-left corner, minimal, semi-transparent:
 ## Technical Architecture
 
 ### Single-file approach
-Everything in one `index.html`: HTML structure, CSS (inline `<style>`), JS (inline `<script>`). No external dependencies. No build step.
+Everything in one `index.html`: HTML structure, CSS (inline `<style>`), JS (inline `<script>`). No external dependencies. No build step for the frontend. The server (`server.ts`) runs via `npx tsx` (matching existing project patterns).
 
 ### Performance
-- **Spatial hash grid** (cell size = max perception radius) for O(1) neighbor lookups
+- **Spatial hash grid** (cell size = 50px, balancing lookup efficiency vs. cell density) for O(1) neighbor lookups
 - Target: 60fps with up to 200 creatures
 - requestAnimationFrame loop
 
