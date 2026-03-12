@@ -689,21 +689,39 @@
         this.init();
         this.enabled = true;
         this.ctx.resume();
-        // Fade in
-        this.masterGain.gain.linearRampToValueAtTime(0.25, this.ctx.currentTime + 2);
-        // Fade in drones
-        for (const d of this.droneOscs) {
-          d.gain.gain.linearRampToValueAtTime(0.06, this.ctx.currentTime + 3);
-        }
+        this.masterGain.gain.linearRampToValueAtTime(0.3, this.ctx.currentTime + 2);
+        this._setDroneLevel(1.0);
+        this._listenVisibility();
       }
 
       disable() {
         if (!this.initialized) return;
         this.enabled = false;
         this.masterGain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1);
+        this._setDroneLevel(0);
+      }
+
+      _setDroneLevel(factor) {
+        const now = this.ctx.currentTime;
         for (const d of this.droneOscs) {
-          d.gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1);
+          // Drones are very quiet — felt more than heard
+          d.gain.gain.linearRampToValueAtTime(0.015 * factor, now + 2);
         }
+      }
+
+      _listenVisibility() {
+        if (this._visibilityBound) return;
+        this._visibilityBound = true;
+        document.addEventListener('visibilitychange', () => {
+          if (!this.enabled) return;
+          if (document.hidden) {
+            // Tab backgrounded: fade drones to near-silence
+            this._setDroneLevel(0.15);
+          } else {
+            // Tab foregrounded: restore drones
+            this._setDroneLevel(1.0);
+          }
+        });
       }
 
       // Map hue (0-360) to a musical frequency using pentatonic scale
@@ -731,9 +749,9 @@
           const targetFreq = baseFreq * harmonics[i];
           d.osc.frequency.linearRampToValueAtTime(targetFreq, now + 4);
 
-          // Drone volume responds to population density
-          const popFactor = clamp(stats.population / 100, 0.2, 1.0);
-          d.gain.gain.linearRampToValueAtTime(0.04 * popFactor, now + 2);
+          // Drone volume responds to population — very subtle
+          const popFactor = clamp(stats.population / 100, 0.3, 1.0);
+          d.gain.gain.linearRampToValueAtTime(0.015 * popFactor, now + 2);
         }
 
         // Birth sounds — crystalline pings
