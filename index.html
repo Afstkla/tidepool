@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tidepool</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0a0f; }
+    canvas { display: block; }
+    #overlay {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      color: rgba(255, 255, 255, 0.35);
+      font: 11px/1.6 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      pointer-events: none;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="overlay"></div>
+  <script>
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+    const BG_COLOR = '#0a0a0f';
+    const TRAIL_ALPHA = 0.08;
+    const FOOD_SPAWN_RATE = 2;
+    const FOOD_ENERGY = 10;
+    const REPRO_THRESHOLD = 100;
+    const INITIAL_ENERGY = 60;
+    const INITIAL_POP = 50;
+    const MUTATION_RATE = 0.05;
+    const MAX_FOOD = 500;
+    const CLICK_FOOD_COUNT = 20;
+    const HASH_CELL_SIZE = 50;
+
+    // Gene ranges
+    const GENE_RANGES = {
+      hue:         { min: 0,    max: 360 },
+      size:        { min: 2,    max: 6 },
+      speed:       { min: 0.5,  max: 3.0 },
+      sociability: { min: -1.0, max: 1.0 },
+      perception:  { min: 20,   max: 100 },
+    };
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
+    function clamp(v, min, max) {
+      return v < min ? min : v > max ? max : v;
+    }
+
+    function randRange(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    // Box-Muller transform for gaussian random
+    function gaussRandom() {
+      let u = 0, v = 0;
+      while (u === 0) u = Math.random();
+      while (v === 0) v = Math.random();
+      return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    }
+
+    function wrapCoord(val, max) {
+      return ((val % max) + max) % max;
+    }
+
+    function toroidalDist(x1, y1, x2, y2, w, h) {
+      let dx = Math.abs(x1 - x2);
+      let dy = Math.abs(y1 - y2);
+      if (dx > w / 2) dx = w - dx;
+      if (dy > h / 2) dy = h - dy;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function toroidalDelta(from, to, wrap) {
+      let d = to - from;
+      if (d > wrap / 2) d -= wrap;
+      if (d < -wrap / 2) d += wrap;
+      return d;
+    }
+
+    // ============================================================
+    // SPATIAL HASH
+    // ============================================================
+    class SpatialHash {
+      constructor(cellSize) {
+        this.cellSize = cellSize;
+        this.grid = new Map();
+      }
+
+      clear() {
+        this.grid.clear();
+      }
+
+      _key(x, y) {
+        const col = Math.floor(x / this.cellSize);
+        const row = Math.floor(y / this.cellSize);
+        return (col << 16) ^ row;
+      }
+
+      insert(entity) {
+        const key = this._key(entity.x, entity.y);
+        let cell = this.grid.get(key);
+        if (!cell) {
+          cell = [];
+          this.grid.set(key, cell);
+        }
+        cell.push(entity);
+      }
+
+      query(x, y, radius, canvasW, canvasH) {
+        const results = [];
+        const cellRadius = Math.ceil(radius / this.cellSize);
+        const col = Math.floor(x / this.cellSize);
+        const row = Math.floor(y / this.cellSize);
+        const maxCol = Math.ceil(canvasW / this.cellSize);
+        const maxRow = Math.ceil(canvasH / this.cellSize);
+
+        for (let dc = -cellRadius; dc <= cellRadius; dc++) {
+          for (let dr = -cellRadius; dr <= cellRadius; dr++) {
+            const c = ((col + dc) % maxCol + maxCol) % maxCol;
+            const r = ((row + dr) % maxRow + maxRow) % maxRow;
+            const key = (c << 16) ^ r;
+            const cell = this.grid.get(key);
+            if (cell) {
+              for (let i = 0; i < cell.length; i++) {
+                const e = cell[i];
+                if (toroidalDist(x, y, e.x, e.y, canvasW, canvasH) <= radius) {
+                  results.push(e);
+                }
+              }
+            }
+          }
+        }
+        return results;
+      }
+    }
+
+    // ============================================================
+    // FOOD
+    // ============================================================
+    class Food {
+      constructor(x, y, energy = FOOD_ENERGY) {
+        this.x = x;
+        this.y = y;
+        this.energy = energy;
+        this.vx = randRange(-0.1, 0.1);
+        this.vy = randRange(-0.1, 0.1);
+        this.alive = true;
+        this._isFood = true;
+      }
+
+      update(w, h) {
+        this.x = wrapCoord(this.x + this.vx, w);
+        this.y = wrapCoord(this.y + this.vy, h);
+      }
+    }
+
+    // ============================================================
+    // CREATURE
+    // ============================================================
+    class Creature {
+      constructor(x, y, genome, energy) {
+        this.x = x;
+        this.y = y;
+        this.genome = genome;
+        this.energy = energy;
+        this.vx = randRange(-1, 1);
+        this.vy = randRange(-1, 1);
+        this.age = 0;
+        this.alive = true;
+        this.birthFrame = 0; // set externally for birth effect
+        this._isFood = false;
+      }
+
+      static random(w, h) {
+        const genome = {};
+        for (const [gene, range] of Object.entries(GENE_RANGES)) {
+          genome[gene] = randRange(range.min, range.max);
+        }
+        return new Creature(
+          Math.random() * w,
+          Math.random() * h,
+          genome,
+          INITIAL_ENERGY
+        );
+      }
+
+      update(nearbyFood, nearbyCreatures, w, h) {
+        // Steering forces
+        let fx = 0, fy = 0;
+
+        // Steer toward nearest food (hunger-weighted)
+        const hunger = 1 - (this.energy / REPRO_THRESHOLD);
+        let closestFoodDist = Infinity;
+        let closestFoodDx = 0, closestFoodDy = 0;
+        for (const f of nearbyFood) {
+          const dx = toroidalDelta(this.x, f.x, w);
+          const dy = toroidalDelta(this.y, f.y, h);
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < closestFoodDist) {
+            closestFoodDist = dist;
+            closestFoodDx = dx;
+            closestFoodDy = dy;
+          }
+        }
+        if (closestFoodDist < Infinity && closestFoodDist > 0) {
+          const strength = Math.max(0, hunger) * 2;
+          fx += (closestFoodDx / closestFoodDist) * strength;
+          fy += (closestFoodDy / closestFoodDist) * strength;
+        }
+
+        // Social force from neighbors
+        const soc = this.genome.sociability;
+        let socFx = 0, socFy = 0;
+        let neighborCount = 0;
+        for (const c of nearbyCreatures) {
+          if (c === this) continue;
+          const dx = toroidalDelta(this.x, c.x, w);
+          const dy = toroidalDelta(this.y, c.y, h);
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 0 && dist < this.genome.perception) {
+            // Separation force when too close (always repel within size*3)
+            if (dist < this.genome.size * 3) {
+              socFx -= (dx / dist) * 2;
+              socFy -= (dy / dist) * 2;
+            } else {
+              socFx += (dx / dist) * soc;
+              socFy += (dy / dist) * soc;
+            }
+            neighborCount++;
+          }
+        }
+        if (neighborCount > 0) {
+          fx += socFx / neighborCount;
+          fy += socFy / neighborCount;
+        }
+
+        // Random wander
+        fx += randRange(-0.3, 0.3);
+        fy += randRange(-0.3, 0.3);
+
+        // Normalize and scale by speed
+        const fMag = Math.sqrt(fx * fx + fy * fy);
+        if (fMag > 0) {
+          fx = (fx / fMag) * this.genome.speed;
+          fy = (fy / fMag) * this.genome.speed;
+        }
+
+        // Smooth steering (lerp toward desired velocity)
+        this.vx += (fx - this.vx) * 0.1;
+        this.vy += (fy - this.vy) * 0.1;
+
+        // Clamp velocity
+        const vMag = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        if (vMag > this.genome.speed) {
+          this.vx = (this.vx / vMag) * this.genome.speed;
+          this.vy = (this.vy / vMag) * this.genome.speed;
+        }
+
+        // Move
+        this.x = wrapCoord(this.x + this.vx, w);
+        this.y = wrapCoord(this.y + this.vy, h);
+
+        // Energy cost
+        this.energy -= 0.1 + this.genome.speed * this.genome.speed * this.genome.size * 0.008;
+
+        this.age++;
+
+        if (this.energy <= 0) {
+          this.alive = false;
+        }
+      }
+
+      tryEat(food, w, h) {
+        if (!food.alive) return false;
+        const dist = toroidalDist(this.x, this.y, food.x, food.y, w, h);
+        if (dist < this.genome.size + 2) {
+          this.energy += food.energy * this.genome.size / 4;
+          food.alive = false;
+          return true;
+        }
+        return false;
+      }
+
+      canReproduce() {
+        return this.energy > REPRO_THRESHOLD;
+      }
+
+      reproduce(frameCount) {
+        this.energy /= 2;
+        const childGenome = {};
+        for (const [gene, range] of Object.entries(GENE_RANGES)) {
+          const sigma = (range.max - range.min) * MUTATION_RATE;
+          const mutated = this.genome[gene] + gaussRandom() * sigma;
+          childGenome[gene] = clamp(mutated, range.min, range.max);
+        }
+        const child = new Creature(
+          wrapCoord(this.x + randRange(-10, 10), 1e9),
+          wrapCoord(this.y + randRange(-10, 10), 1e9),
+          childGenome,
+          this.energy
+        );
+        child.birthFrame = frameCount;
+        return child;
+      }
+    }
+
+    // ============================================================
+    // EFFECTS
+    // ============================================================
+    class Effects {
+      constructor() {
+        this.active = [];
+      }
+
+      addDeath(x, y, size, hue) {
+        this.active.push({
+          type: 'death',
+          x, y,
+          size,
+          hue,
+          frame: 0,
+          maxFrames: 15,
+        });
+      }
+
+      update() {
+        for (let i = this.active.length - 1; i >= 0; i--) {
+          this.active[i].frame++;
+          if (this.active[i].frame >= this.active[i].maxFrames) {
+            this.active.splice(i, 1);
+          }
+        }
+      }
+    }
+
+    // ============================================================
+    // SIMULATION
+    // ============================================================
+    class Simulation {
+      constructor() {
+        this.creatures = [];
+        this.food = [];
+        this.creatureHash = new SpatialHash(HASH_CELL_SIZE);
+        this.foodHash = new SpatialHash(HASH_CELL_SIZE);
+        this.effects = new Effects();
+        this.generation = 0;
+        this.frameCount = 0;
+        this.width = 0;
+        this.height = 0;
+      }
+
+      init(w, h) {
+        this.width = w;
+        this.height = h;
+
+        // Spawn initial creatures
+        for (let i = 0; i < INITIAL_POP; i++) {
+          this.creatures.push(Creature.random(w, h));
+        }
+
+        // Spawn initial food
+        for (let i = 0; i < 200; i++) {
+          this.food.push(new Food(Math.random() * w, Math.random() * h));
+        }
+      }
+
+      resize(w, h) {
+        this.width = w;
+        this.height = h;
+      }
+
+      update() {
+        this.frameCount++;
+        const w = this.width;
+        const h = this.height;
+
+        // Rebuild spatial hashes
+        this.creatureHash.clear();
+        this.foodHash.clear();
+        for (const c of this.creatures) this.creatureHash.insert(c);
+        for (const f of this.food) this.foodHash.insert(f);
+
+        // Update food
+        for (const f of this.food) f.update(w, h);
+
+        // Update creatures
+        const births = [];
+        for (const c of this.creatures) {
+          const nearbyCreatures = this.creatureHash.query(
+            c.x, c.y, c.genome.perception, w, h
+          );
+          const nearbyFood = this.foodHash.query(
+            c.x, c.y, c.genome.perception, w, h
+          );
+
+          c.update(nearbyFood, nearbyCreatures, w, h);
+
+          // Try to eat nearby food
+          for (const f of nearbyFood) {
+            c.tryEat(f, w, h);
+          }
+
+          // Reproduce
+          if (c.canReproduce()) {
+            const child = c.reproduce(this.frameCount);
+            births.push(child);
+            this.generation++;
+          }
+        }
+
+        // Process deaths
+        for (let i = this.creatures.length - 1; i >= 0; i--) {
+          const c = this.creatures[i];
+          if (!c.alive) {
+            // Death effect
+            this.effects.addDeath(c.x, c.y, c.genome.size, c.genome.hue);
+            // Spawn food from corpse
+            const count = Math.floor(c.genome.size);
+            for (let j = 0; j < count; j++) {
+              this.food.push(new Food(
+                c.x + randRange(-8, 8),
+                c.y + randRange(-8, 8),
+                FOOD_ENERGY
+              ));
+            }
+            this.creatures.splice(i, 1);
+          }
+        }
+
+        // Remove eaten food
+        this.food = this.food.filter(f => f.alive);
+
+        // Add births
+        for (const b of births) this.creatures.push(b);
+
+        // Ambient food spawn
+        if (this.food.length < MAX_FOOD) {
+          for (let i = 0; i < FOOD_SPAWN_RATE; i++) {
+            this.food.push(new Food(Math.random() * w, Math.random() * h));
+          }
+        }
+
+        // Update effects
+        this.effects.update();
+      }
+
+      addFoodAt(x, y, count) {
+        for (let i = 0; i < count; i++) {
+          this.food.push(new Food(
+            x + randRange(-30, 30),
+            y + randRange(-30, 30)
+          ));
+        }
+      }
+
+      stats() {
+        const pop = this.creatures.length;
+        let dominantHue = 0;
+        if (pop > 0) {
+          // Circular mean for hue
+          let sinSum = 0, cosSum = 0;
+          for (const c of this.creatures) {
+            const rad = c.genome.hue * Math.PI / 180;
+            sinSum += Math.sin(rad);
+            cosSum += Math.cos(rad);
+          }
+          dominantHue = Math.atan2(sinSum / pop, cosSum / pop) * 180 / Math.PI;
+          if (dominantHue < 0) dominantHue += 360;
+        }
+        return {
+          population: pop,
+          generation: this.generation,
+          dominantHue: Math.round(dominantHue),
+          foodCount: this.food.length,
+        };
+      }
+    }
+
+    // ============================================================
+    // RENDERER
+    // ============================================================
+    class Renderer {
+      constructor() {
+        this.canvas = document.getElementById('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.overlay = document.getElementById('overlay');
+        this.startTime = Date.now();
+      }
+
+      init(w, h) {
+        this.canvas.width = w;
+        this.canvas.height = h;
+        this.ctx.fillStyle = BG_COLOR;
+        this.ctx.fillRect(0, 0, w, h);
+      }
+
+      resize(w, h) {
+        // Preserve current canvas content
+        const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+        this.canvas.width = w;
+        this.canvas.height = h;
+        this.ctx.putImageData(imageData, 0, 0);
+      }
+
+      drawFrame(simulation) {
+        const ctx = this.ctx;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Trail fade effect
+        ctx.fillStyle = `rgba(10, 10, 15, ${TRAIL_ALPHA})`;
+        ctx.fillRect(0, 0, w, h);
+
+        // Draw food
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        for (const f of simulation.food) {
+          ctx.fillRect(f.x, f.y, 1, 1);
+        }
+
+        // Draw creatures
+        const frameCount = simulation.frameCount;
+        for (const c of simulation.creatures) {
+          const hue = c.genome.hue;
+          const size = c.genome.size;
+
+          // Birth pulse effect
+          let renderSize = size;
+          const birthAge = frameCount - c.birthFrame;
+          if (birthAge < 8) {
+            renderSize = size * (1 + 0.5 * (1 - birthAge / 8));
+          }
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, renderSize, 0, Math.PI * 2);
+          ctx.fillStyle = `hsla(${hue}, 60%, 55%, 0.85)`;
+          ctx.shadowColor = `hsla(${hue}, 80%, 60%, 0.6)`;
+          ctx.shadowBlur = renderSize * 3;
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Draw death effects
+        for (const e of simulation.effects.active) {
+          if (e.type === 'death') {
+            const progress = e.frame / e.maxFrames;
+            const radius = e.size * (1 + progress * 3);
+            const alpha = 1 - progress;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${e.hue}, 60%, 80%, ${alpha * 0.5})`;
+            ctx.fill();
+          }
+        }
+      }
+
+      drawOverlay(stats) {
+        const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const time = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+        const hueColor = `hsl(${stats.dominantHue}, 60%, 55%)`;
+
+        this.overlay.innerHTML =
+          `population ${stats.population}<br>` +
+          `generation ${stats.generation}<br>` +
+          `dominant hue <span style="color:${hueColor}">\u2588</span> ${stats.dominantHue}\u00b0<br>` +
+          `${time}`;
+      }
+    }
+
+    // ============================================================
+    // MAIN
+    // ============================================================
+    function main() {
+      const sim = new Simulation();
+      const renderer = new Renderer();
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      renderer.init(w, h);
+      sim.init(w, h);
+
+      // Click to drop food
+      renderer.canvas.addEventListener('click', (e) => {
+        sim.addFoodAt(e.clientX, e.clientY, CLICK_FOOD_COUNT);
+      });
+
+      // Resize
+      window.addEventListener('resize', () => {
+        const nw = window.innerWidth;
+        const nh = window.innerHeight;
+        renderer.resize(nw, nh);
+        sim.resize(nw, nh);
+      });
+
+      // Animation loop
+      let overlayCounter = 0;
+      function loop() {
+        sim.update();
+        renderer.drawFrame(sim);
+
+        // Update overlay every 30 frames
+        overlayCounter++;
+        if (overlayCounter >= 30) {
+          overlayCounter = 0;
+          renderer.drawOverlay(sim.stats());
+        }
+
+        requestAnimationFrame(loop);
+      }
+
+      loop();
+    }
+
+    main();
+  </script>
+</body>
+</html>
