@@ -63,9 +63,6 @@
       ['nature', 'emotion'],
       ['action', 'abstract'],
       ['body', 'time'],
-      ['nature', 'action'],
-      ['emotion', 'body'],
-      ['time', 'abstract'],
     ];
 
     function hasAffinity(catA, catB) {
@@ -79,13 +76,13 @@
     // CONSTANTS
     // ============================================================
     const BG_COLOR = '#0a0a0f';
-    const SENSE_RANGE = 120;
-    const BOND_RANGE = 25;
-    const SPRING_REST = 35;
-    const ATTRACT_FORCE = 0.002;
-    const REPEL_SAME_FORCE = 0.001;
-    const SEPARATION_FORCE = 0.003;
-    const SEPARATION_RANGE = 40;
+    const SENSE_RANGE = 100;
+    const BOND_RANGE = 22;
+    const SPRING_REST = 45;
+    const ATTRACT_FORCE = 0.0006;
+    const REPEL_SAME_FORCE = 0.003;
+    const SEPARATION_FORCE = 0.008;
+    const SEPARATION_RANGE = 50;
     const HOVER_RANGE = 50;
     const HOVER_ATTRACT_RANGE = 200;
     const HOVER_ATTRACT_FORCE = 0.005;
@@ -184,21 +181,7 @@
       }
 
       chainLength() {
-        const visited = new Set();
-        let count = 0;
-        let current = this;
-        // Walk left
-        while (current && !visited.has(current)) {
-          visited.add(current);
-          current = current.linkLeft;
-        }
-        // Walk right from this
-        current = this;
-        while (current && !visited.has(current)) {
-          visited.add(current);
-          current = current.linkRight;
-        }
-        return visited.size;
+        return this.getChain().length;
       }
 
       getChain() {
@@ -321,32 +304,35 @@
               b.vy += ny * rep;
             }
 
-            // Affinity attraction
+            // Affinity attraction — stronger when closer
             if (hasAffinity(a.category, b.category) && dist < SENSE_RANGE) {
-              const att = ATTRACT_FORCE * (1 / dist) * dt * 60;
+              const closeness = 1 - (dist / SENSE_RANGE);
+              const att = ATTRACT_FORCE * (1 + closeness * 8) * dt;
               a.vx += nx * att;
               a.vy += ny * att;
               b.vx -= nx * att;
               b.vy -= ny * att;
 
-              // Bonding check
-              if (dist < BOND_RANGE && a.hasFreeSlot() && b.hasFreeSlot() && !a.isLinkedTo(b)) {
-                // Check chain length won't exceed max
-                const aChainLen = a.chainLength();
-                const bChainLen = b.chainLength();
-                if (aChainLen + bChainLen <= MAX_CHAIN) {
-                  const slotA = a.freeSlot();
-                  const slotB = b.freeSlot();
-                  // Link: A's right to B's left (or whatever's free)
-                  a.linkTo(b, slotA);
-                  b.linkTo(a, slotB);
-                  // Average and slow velocity
-                  const avgVx = (a.vx + b.vx) * 0.3;
-                  const avgVy = (a.vy + b.vy) * 0.3;
-                  a.vx = avgVx;
-                  a.vy = avgVy;
-                  b.vx = avgVx;
-                  b.vy = avgVy;
+              // Bonding check — enforce chain topology, with probability gate
+              if (dist < BOND_RANGE && !a.isLinkedTo(b) && Math.random() < 0.015) {
+                let canBond = false;
+                let bondASlot, bondBSlot;
+                if (a.linkRight === null && b.linkLeft === null) {
+                  canBond = true; bondASlot = 'right'; bondBSlot = 'left';
+                } else if (a.linkLeft === null && b.linkRight === null) {
+                  canBond = true; bondASlot = 'left'; bondBSlot = 'right';
+                }
+                if (canBond) {
+                  const aChainLen = a.chainLength();
+                  const bChainLen = b.chainLength();
+                  if (aChainLen + bChainLen <= MAX_CHAIN) {
+                    a.linkTo(b, bondASlot);
+                    b.linkTo(a, bondBSlot);
+                    const avgVx = (a.vx + b.vx) * 0.3;
+                    const avgVy = (a.vy + b.vy) * 0.3;
+                    a.vx = avgVx; a.vy = avgVy;
+                    b.vx = avgVx; b.vy = avgVy;
+                  }
                 }
               }
             }
