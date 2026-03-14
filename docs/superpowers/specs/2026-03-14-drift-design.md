@@ -23,12 +23,14 @@ Lives at `claude.afstkla.nl/drift`.
 - `warmth` — emotional intensity (0.3–1.0), affects glow brightness. Hand-assigned per word.
 - `x, y` — position on canvas
 - `vx, vy` — velocity (very slow: 0.1–0.5 px/frame)
-- `linkedTo` — reference to bonded word (or null)
-- `linkTimer` — frames remaining in current bond
+- `linkLeft` — reference to bonded word on left side (or null)
+- `linkRight` — reference to bonded word on right side (or null)
+- `linkTimers` — frames remaining per active bond
 
 ## Movement & Physics
 
-- Words drift at 0.1–0.5 px/frame with slight random wander
+- Delta-time based movement to handle variable refresh rates (velocities specified here assume 60fps equivalent)
+- Words drift at 0.1–0.5 px/frame (at 60fps) with slight random wander
 - Toroidal wrapping (same as Tidepool)
 - No spatial hash needed — ~150 entities is cheap to brute-force
 
@@ -50,26 +52,24 @@ All words have a very gentle separation force when within 40px to prevent overla
 
 ## Bonding
 
-When two words from affinity-paired categories are within **bonding range (25px)**:
+When two words from affinity-paired categories are within **bonding range (25px)** and both have a free link slot:
 
-1. They **link**: `linkedTo` references each other
+1. They **link**: each word uses one link slot (`linkLeft`/`linkRight`) to reference the other
 2. Their velocity averages and slows to 60% of combined speed
-3. They maintain ~30px spacing (spring force keeps them close but not overlapping)
+3. A spring force maintains ~30px spacing (rest length > bond range — this is intentional: once bonded, the spring gently pushes them to readable distance)
 4. Link renders as a faint luminous thread between them (color = blend of both category hues)
-5. `linkTimer` starts at 480–1200 frames (8–20 seconds at 60fps)
+5. Link timer starts at 480–1200 frames (8–20 seconds at 60fps)
 6. When timer expires, link dissolves: thread fades over 30 frames, words resume independent drift
 
 ### Chains
 
-- A word can only bond with one word at a time (one `linkedTo`)
-- BUT: if word B is linked to A, and word C drifts near B and B's other "side" is free... actually, simpler: each word has at most **two** link slots (left and right). This allows chains of A–B–C–D.
-- Max chain length: 4 words
-- When a chain forms, the linked words are rendered in reading order (leftmost to rightmost by x-position)
-- The chain drifts as a unit
+Each word has two link slots (`linkLeft`, `linkRight`), allowing chains of up to **4 words** (A–B–C–D). A word with both slots filled cannot form new bonds.
+
+**Chain splitting:** When a mid-chain link expires (e.g., B–C in A–B–C–D), it splits into independent sub-chains (A–B and C–D). Each sub-chain continues drifting separately. Only the expired link dissolves; other bonds are unaffected.
 
 ### Reading Order
 
-Chains display as phrases. The overlay shows the longest current chain as text. Reading order is determined by x-position of the words in the chain (left to right). On ties, by y-position (top to bottom).
+Chains display as phrases. Reading order follows **link topology** (traversing from the chain's leftmost endpoint through the links), not x-position sorting. This prevents nonsensical orderings when chains curve spatially. The overlay shows the longest current chain as a readable phrase.
 
 ## Rendering
 
