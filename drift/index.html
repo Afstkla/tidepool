@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drift</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0a0f; }
+    canvas { display: block; cursor: default; }
+    #overlay {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      z-index: 10;
+      color: rgba(255, 255, 255, 0.4);
+      font: 11px/1.6 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      pointer-events: none;
+      user-select: none;
+      text-shadow: 0 0 8px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 1);
+    }
+    #overlay .phrase {
+      font: italic 13px/1.6 Georgia, 'Times New Roman', serif;
+      color: rgba(255, 255, 255, 0.55);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="overlay"></div>
+  <script>
+    // ============================================================
+    // WORD POOL
+    // ============================================================
+    const CATEGORIES = {
+      nature:   { hue: 175, words: ['ocean','stone','rain','light','root','tide','ash','moth','bloom','frost','river','dust','feather','smoke','seed','thorn','wave','fog','ember','petal','wind','salt','shadow','moss','snow','sky','cloud','clay','shore','bark'] },
+      emotion:  { hue: 340, words: ['quiet','ache','tender','fury','grace','longing','hollow','bright','sorrow','wonder','gentle','fierce','calm','wild','weary','fond','brave','shy','raw','warm'] },
+      time:     { hue: 40,  words: ['always','never','after','dawn','while','still','once','remain','before','now','soon','late','early','again','eternal','moment','dusk','midnight','years','then'] },
+      body:     { hue: 30,  words: ['breath','bone','hand','eye','pulse','throat','skin','mouth','heart','blood','voice','finger','rib','spine','tongue','wrist','shoulder','temple','palm','chest'] },
+      action:   { hue: 210, words: ['drift','break','hold','fall','open','forget','dissolve','carry','reach','leave','gather','lose','turn','wake','rest','burn','mend','pour','sink','rise','keep','shed','trace','pull','fold'] },
+      abstract: { hue: 270, words: ['truth','edge','distance','silence','between','almost','nothing','home','memory','origin','void','promise','threshold','absence','echo','pattern','boundary','whole','fragment','name'] },
+    };
+
+    // Warmth values — hand-tuned emotional intensity
+    const WARMTH = {
+      // High warmth
+      'longing': 1.0, 'ache': 0.95, 'heart': 0.95, 'fury': 0.9, 'ember': 0.9,
+      'breath': 0.9, 'blood': 0.85, 'sorrow': 0.85, 'burn': 0.85, 'wild': 0.85,
+      'tender': 0.85, 'pulse': 0.85, 'grace': 0.8, 'brave': 0.8, 'home': 0.8,
+      'void': 0.8, 'silence': 0.8, 'eternal': 0.8, 'promise': 0.8,
+      // Medium warmth
+      'ocean': 0.7, 'bloom': 0.7, 'light': 0.7, 'dawn': 0.7, 'wonder': 0.7,
+      'gentle': 0.7, 'warm': 0.7, 'voice': 0.7, 'memory': 0.7, 'echo': 0.7,
+      'hold': 0.7, 'reach': 0.7, 'dissolve': 0.7, 'wave': 0.65, 'rain': 0.65,
+      'petal': 0.65, 'skin': 0.65, 'mouth': 0.65, 'throat': 0.65, 'absence': 0.65,
+      'threshold': 0.65, 'midnight': 0.65, 'frost': 0.65, 'snow': 0.65,
+    };
+    const DEFAULT_WARMTH = 0.5;
+
+    // Affinity pairs
+    const AFFINITY_PAIRS = [
+      ['nature', 'emotion'],
+      ['action', 'abstract'],
+      ['body', 'time'],
+      ['nature', 'action'],
+      ['emotion', 'body'],
+      ['time', 'abstract'],
+    ];
+
+    function hasAffinity(catA, catB) {
+      if (catA === catB) return false;
+      return AFFINITY_PAIRS.some(([a, b]) =>
+        (a === catA && b === catB) || (a === catB && b === catA)
+      );
+    }
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+    const BG_COLOR = '#0a0a0f';
+    const SENSE_RANGE = 120;
+    const BOND_RANGE = 25;
+    const SPRING_REST = 35;
+    const ATTRACT_FORCE = 0.002;
+    const REPEL_SAME_FORCE = 0.001;
+    const SEPARATION_FORCE = 0.003;
+    const SEPARATION_RANGE = 40;
+    const HOVER_RANGE = 50;
+    const HOVER_ATTRACT_RANGE = 200;
+    const HOVER_ATTRACT_FORCE = 0.005;
+    const LINK_MIN_FRAMES = 480;
+    const LINK_MAX_FRAMES = 1200;
+    const LINK_FADE_FRAMES = 30;
+    const MAX_CHAIN = 4;
+    const BASE_SPEED = 0.3;
+    const WANDER_STRENGTH = 0.02;
+    const TARGET_FPS = 60;
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
+    function clamp(v, min, max) {
+      return v < min ? min : v > max ? max : v;
+    }
+
+    function randRange(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function wrapCoord(val, max) {
+      return ((val % max) + max) % max;
+    }
+
+    function toroidalDelta(from, to, wrap) {
+      let d = to - from;
+      if (d > wrap / 2) d -= wrap;
+      if (d < -wrap / 2) d += wrap;
+      return d;
+    }
+
+    function toroidalDist(x1, y1, x2, y2, w, h) {
+      const dx = toroidalDelta(x1, x2, w);
+      const dy = toroidalDelta(y1, y2, h);
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // ============================================================
+    // WORD CLASS
+    // ============================================================
+    class Word {
+      constructor(text, category, hue, warmth, x, y) {
+        this.text = text;
+        this.category = category;
+        this.hue = hue;
+        this.warmth = warmth;
+        this.x = x;
+        this.y = y;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = randRange(0.1, 0.5);
+        this.vx = Math.cos(angle) * speed;
+        this.vy = Math.sin(angle) * speed;
+        this.linkLeft = null;
+        this.linkRight = null;
+        this.linkTimerLeft = 0;
+        this.linkTimerRight = 0;
+        this.hovered = false;
+        this.fontSize = 14 + warmth * 6; // 14-20px
+      }
+
+      hasFreeSlot() {
+        return this.linkLeft === null || this.linkRight === null;
+      }
+
+      freeSlot() {
+        if (this.linkLeft === null) return 'left';
+        if (this.linkRight === null) return 'right';
+        return null;
+      }
+
+      linkTo(other, slot) {
+        if (slot === 'left') {
+          this.linkLeft = other;
+          this.linkTimerLeft = Math.floor(randRange(LINK_MIN_FRAMES, LINK_MAX_FRAMES));
+        } else {
+          this.linkRight = other;
+          this.linkTimerRight = Math.floor(randRange(LINK_MIN_FRAMES, LINK_MAX_FRAMES));
+        }
+      }
+
+      unlink(other) {
+        if (this.linkLeft === other) {
+          this.linkLeft = null;
+          this.linkTimerLeft = 0;
+        }
+        if (this.linkRight === other) {
+          this.linkRight = null;
+          this.linkTimerRight = 0;
+        }
+      }
+
+      isLinkedTo(other) {
+        return this.linkLeft === other || this.linkRight === other;
+      }
+
+      chainLength() {
+        const visited = new Set();
+        let count = 0;
+        let current = this;
+        // Walk left
+        while (current && !visited.has(current)) {
+          visited.add(current);
+          current = current.linkLeft;
+        }
+        // Walk right from this
+        current = this;
+        while (current && !visited.has(current)) {
+          visited.add(current);
+          current = current.linkRight;
+        }
+        return visited.size;
+      }
+
+      getChain() {
+        // Walk to leftmost end
+        const visited = new Set();
+        let start = this;
+        visited.add(start);
+        while (start.linkLeft && !visited.has(start.linkLeft)) {
+          start = start.linkLeft;
+          visited.add(start);
+        }
+        // Walk right to build chain
+        const chain = [start];
+        let current = start;
+        while (current.linkRight && !chain.includes(current.linkRight)) {
+          current = current.linkRight;
+          chain.push(current);
+        }
+        return chain;
+      }
+
+      update(dt, w, h) {
+        this.x = wrapCoord(this.x + this.vx * dt, w);
+        this.y = wrapCoord(this.y + this.vy * dt, h);
+
+        // Decay link timers
+        if (this.linkLeft) {
+          this.linkTimerLeft -= dt;
+        }
+        if (this.linkRight) {
+          this.linkTimerRight -= dt;
+        }
+      }
+    }
+
+    // ============================================================
+    // SIMULATION
+    // ============================================================
+    class Simulation {
+      constructor() {
+        this.words = [];
+        this.width = 0;
+        this.height = 0;
+        this.mouseX = -1000;
+        this.mouseY = -1000;
+        this.fadingLinks = []; // {a, b, frame, maxFrames}
+      }
+
+      init(w, h) {
+        this.width = w;
+        this.height = h;
+
+        // Create word objects from pool
+        for (const [cat, data] of Object.entries(CATEGORIES)) {
+          for (const text of data.words) {
+            const warmth = WARMTH[text] || DEFAULT_WARMTH;
+            this.words.push(new Word(
+              text, cat, data.hue, warmth,
+              Math.random() * w,
+              Math.random() * h
+            ));
+          }
+        }
+      }
+
+      resize(w, h) {
+        this.width = w;
+        this.height = h;
+      }
+
+      update(dt) {
+        const w = this.width;
+        const h = this.height;
+        const words = this.words;
+        const n = words.length;
+
+        // Reset hover state
+        for (const word of words) word.hovered = false;
+
+        // Check hover
+        let hoveredWord = null;
+        let hoveredDist = HOVER_RANGE;
+        for (const word of words) {
+          const d = toroidalDist(this.mouseX, this.mouseY, word.x, word.y, w, h);
+          if (d < hoveredDist) {
+            hoveredDist = d;
+            hoveredWord = word;
+          }
+        }
+        if (hoveredWord) hoveredWord.hovered = true;
+
+        // Physics: attraction, repulsion, bonding
+        for (let i = 0; i < n; i++) {
+          const a = words[i];
+          for (let j = i + 1; j < n; j++) {
+            const b = words[j];
+            const dx = toroidalDelta(a.x, b.x, w);
+            const dy = toroidalDelta(a.y, b.y, h);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 1) continue;
+
+            const nx = dx / dist;
+            const ny = dy / dist;
+
+            // Separation force (all words)
+            if (dist < SEPARATION_RANGE) {
+              const sep = SEPARATION_FORCE * (1 - dist / SEPARATION_RANGE) * dt;
+              a.vx -= nx * sep;
+              a.vy -= ny * sep;
+              b.vx += nx * sep;
+              b.vy += ny * sep;
+            }
+
+            // Same category repulsion
+            if (a.category === b.category && dist < 80) {
+              const rep = REPEL_SAME_FORCE * dt;
+              a.vx -= nx * rep;
+              a.vy -= ny * rep;
+              b.vx += nx * rep;
+              b.vy += ny * rep;
+            }
+
+            // Affinity attraction
+            if (hasAffinity(a.category, b.category) && dist < SENSE_RANGE) {
+              const att = ATTRACT_FORCE * (1 / dist) * dt * 60;
+              a.vx += nx * att;
+              a.vy += ny * att;
+              b.vx -= nx * att;
+              b.vy -= ny * att;
+
+              // Bonding check
+              if (dist < BOND_RANGE && a.hasFreeSlot() && b.hasFreeSlot() && !a.isLinkedTo(b)) {
+                // Check chain length won't exceed max
+                const aChainLen = a.chainLength();
+                const bChainLen = b.chainLength();
+                if (aChainLen + bChainLen <= MAX_CHAIN) {
+                  const slotA = a.freeSlot();
+                  const slotB = b.freeSlot();
+                  // Link: A's right to B's left (or whatever's free)
+                  a.linkTo(b, slotA);
+                  b.linkTo(a, slotB);
+                  // Average and slow velocity
+                  const avgVx = (a.vx + b.vx) * 0.3;
+                  const avgVy = (a.vy + b.vy) * 0.3;
+                  a.vx = avgVx;
+                  a.vy = avgVy;
+                  b.vx = avgVx;
+                  b.vy = avgVy;
+                }
+              }
+            }
+
+            // Spring force for linked words
+            if (a.isLinkedTo(b)) {
+              const springDx = dist - SPRING_REST;
+              const springForce = springDx * 0.01 * dt;
+              a.vx += nx * springForce;
+              a.vy += ny * springForce;
+              b.vx -= nx * springForce;
+              b.vy -= ny * springForce;
+            }
+          }
+
+          // Hover attraction
+          if (hoveredWord && a !== hoveredWord && hasAffinity(a.category, hoveredWord.category)) {
+            const hDist = toroidalDist(a.x, a.y, hoveredWord.x, hoveredWord.y, w, h);
+            if (hDist < HOVER_ATTRACT_RANGE && hDist > 1) {
+              const hdx = toroidalDelta(a.x, hoveredWord.x, w);
+              const hdy = toroidalDelta(a.y, hoveredWord.y, h);
+              const att = HOVER_ATTRACT_FORCE * dt;
+              a.vx += (hdx / hDist) * att;
+              a.vy += (hdy / hDist) * att;
+            }
+          }
+        }
+
+        // Update positions, apply drag, handle link expiry
+        for (const word of words) {
+          // Gentle drag to keep speeds in range
+          const speed = Math.sqrt(word.vx * word.vx + word.vy * word.vy);
+          const maxSpeed = BASE_SPEED * 2;
+          if (speed > maxSpeed) {
+            word.vx = (word.vx / speed) * maxSpeed;
+            word.vy = (word.vy / speed) * maxSpeed;
+          }
+          word.vx *= (1 - 0.01 * dt);
+          word.vy *= (1 - 0.01 * dt);
+
+          // Random wander
+          word.vx += randRange(-WANDER_STRENGTH, WANDER_STRENGTH) * dt;
+          word.vy += randRange(-WANDER_STRENGTH, WANDER_STRENGTH) * dt;
+
+          // Ensure minimum drift
+          const spd = Math.sqrt(word.vx * word.vx + word.vy * word.vy);
+          if (spd < 0.05) {
+            const angle = Math.random() * Math.PI * 2;
+            word.vx += Math.cos(angle) * 0.1;
+            word.vy += Math.sin(angle) * 0.1;
+          }
+
+          word.update(dt, w, h);
+
+          // Check link expiry
+          if (word.linkLeft && word.linkTimerLeft <= 0) {
+            const other = word.linkLeft;
+            this.fadingLinks.push({
+              ax: word.x, ay: word.y,
+              bx: other.x, by: other.y,
+              hueA: word.hue, hueB: other.hue,
+              frame: 0, maxFrames: LINK_FADE_FRAMES
+            });
+            other.unlink(word);
+            word.unlink(other);
+          }
+          if (word.linkRight && word.linkTimerRight <= 0) {
+            const other = word.linkRight;
+            this.fadingLinks.push({
+              ax: word.x, ay: word.y,
+              bx: other.x, by: other.y,
+              hueA: word.hue, hueB: other.hue,
+              frame: 0, maxFrames: LINK_FADE_FRAMES
+            });
+            other.unlink(word);
+            word.unlink(other);
+          }
+        }
+
+        // Update fading links
+        for (let i = this.fadingLinks.length - 1; i >= 0; i--) {
+          this.fadingLinks[i].frame += dt;
+          if (this.fadingLinks[i].frame >= this.fadingLinks[i].maxFrames) {
+            this.fadingLinks.splice(i, 1);
+          }
+        }
+      }
+
+      getChains() {
+        const visited = new Set();
+        const chains = [];
+        for (const word of this.words) {
+          if (visited.has(word)) continue;
+          if (!word.linkLeft && !word.linkRight) continue;
+          const chain = word.getChain();
+          for (const w of chain) visited.add(w);
+          if (chain.length >= 2) chains.push(chain);
+        }
+        return chains;
+      }
+
+      stats() {
+        const chains = this.getChains();
+        let longest = [];
+        for (const c of chains) {
+          if (c.length > longest.length) longest = c;
+        }
+        return {
+          phraseCount: chains.length,
+          longestPhrase: longest.map(w => w.text).join(' '),
+          longestLength: longest.length,
+        };
+      }
+    }
+
+    // ============================================================
+    // RENDERER
+    // ============================================================
+    class Renderer {
+      constructor() {
+        this.canvas = document.getElementById('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.overlay = document.getElementById('overlay');
+        this.startTime = Date.now();
+      }
+
+      init(w, h) {
+        this.canvas.width = w;
+        this.canvas.height = h;
+      }
+
+      resize(w, h) {
+        this.canvas.width = w;
+        this.canvas.height = h;
+      }
+
+      drawFrame(sim) {
+        const ctx = this.ctx;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Clear
+        ctx.fillStyle = BG_COLOR;
+        ctx.fillRect(0, 0, w, h);
+
+        // Draw link threads
+        const chains = sim.getChains();
+        for (const chain of chains) {
+          for (let i = 0; i < chain.length - 1; i++) {
+            const a = chain[i];
+            const b = chain[i + 1];
+            const pulse = 0.3 + 0.1 * Math.sin(Date.now() * 0.002);
+            this._drawThread(ctx, a, b, pulse, w, h);
+          }
+        }
+
+        // Draw fading link threads
+        for (const fl of sim.fadingLinks) {
+          const alpha = 0.3 * (1 - fl.frame / fl.maxFrames);
+          ctx.strokeStyle = `hsla(${(fl.hueA + fl.hueB) / 2}, 40%, 60%, ${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(fl.ax, fl.ay);
+          ctx.lineTo(fl.bx, fl.by);
+          ctx.stroke();
+        }
+
+        // Draw words
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (const word of sim.words) {
+          const isLinked = word.linkLeft !== null || word.linkRight !== null;
+          const sat = isLinked ? 60 : 40;
+          const lit = isLinked ? 75 : 65;
+          const alpha = word.hovered ? 1.0 : (isLinked ? 0.95 : 0.7);
+          const sizeBoost = word.hovered ? 2 : 0;
+
+          ctx.save();
+          ctx.font = `${word.fontSize + sizeBoost}px Georgia, 'Times New Roman', serif`;
+          ctx.fillStyle = `hsla(${word.hue}, ${sat}%, ${lit}%, ${alpha})`;
+          ctx.shadowColor = `hsla(${word.hue}, 60%, 60%, ${alpha * 0.5})`;
+          ctx.shadowBlur = isLinked ? 12 : 6;
+          ctx.fillText(word.text, word.x, word.y);
+          ctx.restore();
+        }
+      }
+
+      _drawThread(ctx, a, b, alpha, w, h) {
+        // Handle toroidal wrapping for drawing
+        const dx = toroidalDelta(a.x, b.x, w);
+        const dy = toroidalDelta(a.y, b.y, h);
+        const bx = a.x + dx;
+        const by = a.y + dy;
+
+        const midHue = (a.hue + b.hue) / 2;
+        ctx.strokeStyle = `hsla(${midHue}, 50%, 65%, ${alpha})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+      }
+
+      drawOverlay(stats) {
+        const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const time = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+        let html = `phrases ${stats.phraseCount}<br>${time}`;
+        if (stats.longestLength >= 2) {
+          html += `<br><span class="phrase">${stats.longestPhrase}</span>`;
+        }
+        this.overlay.innerHTML = html;
+      }
+    }
+
+    // ============================================================
+    // MAIN
+    // ============================================================
+    function main() {
+      const sim = new Simulation();
+      const renderer = new Renderer();
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      renderer.init(w, h);
+      sim.init(w, h);
+
+      // Track mouse
+      renderer.canvas.addEventListener('mousemove', (e) => {
+        sim.mouseX = e.clientX;
+        sim.mouseY = e.clientY;
+      });
+      renderer.canvas.addEventListener('mouseleave', () => {
+        sim.mouseX = -1000;
+        sim.mouseY = -1000;
+      });
+
+      // Resize
+      window.addEventListener('resize', () => {
+        const nw = window.innerWidth;
+        const nh = window.innerHeight;
+        renderer.resize(nw, nh);
+        sim.resize(nw, nh);
+      });
+
+      // Animation loop with delta time
+      let lastTime = performance.now();
+      let overlayCounter = 0;
+
+      function loop(now) {
+        const rawDt = (now - lastTime) / (1000 / TARGET_FPS);
+        const dt = Math.min(rawDt, 3); // cap to prevent jumps after tab switch
+        lastTime = now;
+
+        sim.update(dt);
+        renderer.drawFrame(sim);
+
+        overlayCounter += dt;
+        if (overlayCounter >= 30) {
+          overlayCounter = 0;
+          renderer.drawOverlay(sim.stats());
+        }
+
+        requestAnimationFrame(loop);
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    main();
+  </script>
+</body>
+</html>
