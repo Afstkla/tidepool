@@ -35,9 +35,10 @@
     // ============================================================
     const BG_COLOR = '#0a0a0f';
     const PARTICLE_COUNT = 200;
-    const COUPLING_K = 2.0;
-    const FREQ_SPREAD = 0.3;
-    const NEIGHBOR_RANGE = 80;
+    const COUPLING_K = 5.0;
+    const GLOBAL_COUPLING = 0.3; // weak pull toward collective mean phase
+    const FREQ_SPREAD = 0.2;
+    const NEIGHBOR_RANGE = 100;
     const DISTURB_RADIUS = 120;
     const BASE_SPEED = 0.2;
     const WANDER_STRENGTH = 0.015;
@@ -149,8 +150,8 @@
         this.wanderAngle = Math.random() * Math.PI * 2;
       }
 
-      update(dt, neighbors, w, h) {
-        // Kuramoto coupling
+      update(dt, neighbors, w, h, meanPhase) {
+        // Kuramoto coupling — local neighbors
         let coupling = 0;
         let neighborCount = 0;
 
@@ -166,9 +167,10 @@
           }
         }
 
-        // Phase update: dφ/dt = ω + K * (1/N) * Σ sin(φ_j - φ_i)
+        // Phase update: local coupling + weak global pull toward mean phase
         const effectiveK = neighborCount > 0 ? COUPLING_K / neighborCount : 0;
-        this.phase += (this.naturalFreq + effectiveK * coupling) * dt;
+        const globalPull = GLOBAL_COUPLING * Math.sin(meanPhase - this.phase);
+        this.phase += (this.naturalFreq + effectiveK * coupling + globalPull) * dt;
         // Keep phase in [0, 2π)
         this.phase = ((this.phase % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
 
@@ -288,11 +290,19 @@
         hash.insert(particles[i]);
       }
 
+      // Compute mean phase for global coupling
+      let meanSin = 0, meanCos = 0;
+      for (let i = 0; i < particles.length; i++) {
+        meanCos += Math.cos(particles[i].phase);
+        meanSin += Math.sin(particles[i].phase);
+      }
+      const meanPhase = Math.atan2(meanSin, meanCos);
+
       // Update particles
       for (let i = 0; i < particles.length; i++) {
         const p = particles[i];
         const neighbors = hash.query(p.x, p.y, NEIGHBOR_RANGE, W, H);
-        p.update(dt, neighbors, W, H);
+        p.update(dt, neighbors, W, H, meanPhase);
       }
 
       // Draw connection lines between synchronized neighbors
