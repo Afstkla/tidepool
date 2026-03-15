@@ -24,10 +24,28 @@
       color: rgba(255, 255, 255, 0.55);
       margin-top: 2px;
     }
-    #info-btn {
+    #sound-toggle {
       position: fixed;
       bottom: 16px;
       right: 16px;
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.35);
+      font: 11px 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: all 0.3s;
+      z-index: 20;
+    }
+    #sound-toggle:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+      color: rgba(255, 255, 255, 0.6);
+    }
+    #info-btn {
+      position: fixed;
+      bottom: 16px;
+      right: 100px;
       background: none;
       border: 1px solid rgba(255, 255, 255, 0.15);
       color: rgba(255, 255, 255, 0.35);
@@ -89,6 +107,7 @@
 <body>
   <canvas id="canvas"></canvas>
   <div id="overlay"></div>
+  <button id="sound-toggle">sound off</button>
   <button id="info-btn">?</button>
   <div id="info-overlay">
     <div id="info-panel">
@@ -101,7 +120,7 @@
       </div>
       <div class="info-section">
         <div class="info-header">interact</div>
-        <div class="info-body">Click to scramble the rhythms nearby and watch synchrony rebuild.</div>
+        <div class="info-body">Click to scramble the rhythms nearby and watch synchrony rebuild. Toggle sound to hear the harmony shift from dissonance to consonance as the voices align.</div>
       </div>
     </div>
   </div>
@@ -459,7 +478,7 @@
         }
       }
 
-      // Overlay update (throttled)
+      // Overlay + audio update (throttled)
       overlayTimer += dt;
       if (overlayTimer > 0.25) {
         overlayTimer = 0;
@@ -469,6 +488,7 @@
           html += `<div class="resonance">~ resonance ~</div>`;
         }
         overlay.innerHTML = html;
+        updateAudio(r);
       }
     }
 
@@ -534,6 +554,98 @@
     }
 
     window.addEventListener('resize', resize);
+
+    // ============================================================
+    // AUDIO
+    // ============================================================
+    let audioCtx = null;
+    let audioEnabled = false;
+    let masterGain = null;
+    let voiceGains = [];
+    let voiceOscs = [];
+
+    // Four voices forming a chord that converges as sync increases
+    // Base frequencies: a warm cluster around A3 (220Hz)
+    const VOICE_BASES = [220, 277.18, 329.63, 440]; // A3, C#4, E4, A4 (A major)
+    // Detuned targets when desynchronized — dissonant intervals
+    const VOICE_DETUNE_MAX = [0, 15, -12, 8]; // cents of maximum detune per voice
+
+    function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0;
+      masterGain.connect(audioCtx.destination);
+
+      for (let i = 0; i < VOICE_BASES.length; i++) {
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = VOICE_BASES[i];
+
+        const gain = audioCtx.createGain();
+        gain.gain.value = (i === 0 || i === 3) ? 0.12 : 0.08; // root and octave slightly louder
+
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.start();
+
+        voiceOscs.push(osc);
+        voiceGains.push(gain);
+      }
+    }
+
+    function updateAudio(orderParam) {
+      if (!audioCtx || !audioEnabled) return;
+
+      const t = audioCtx.currentTime;
+      const chaos = 1 - orderParam; // 1 = fully desynchronized, 0 = fully synced
+
+      // Detune voices proportional to chaos
+      for (let i = 0; i < voiceOscs.length; i++) {
+        const detuneCents = VOICE_DETUNE_MAX[i] * chaos * 3; // multiply for more dramatic effect
+        voiceOscs[i].detune.linearRampToValueAtTime(detuneCents, t + 0.1);
+      }
+
+      // Subtle volume swell as sync increases — resonance feels fuller
+      const vol = 0.06 + orderParam * 0.06;
+      masterGain.gain.linearRampToValueAtTime(vol, t + 0.3);
+    }
+
+    function enableAudio() {
+      if (!audioCtx) initAudio();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      audioEnabled = true;
+      const t = audioCtx.currentTime;
+      masterGain.gain.linearRampToValueAtTime(0.08, t + 1.0); // fade in over 1s
+    }
+
+    function disableAudio() {
+      audioEnabled = false;
+      if (audioCtx && masterGain) {
+        const t = audioCtx.currentTime;
+        masterGain.gain.linearRampToValueAtTime(0, t + 0.5); // fade out over 0.5s
+      }
+    }
+
+    // Sound toggle
+    const soundToggle = document.getElementById('sound-toggle');
+    soundToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (audioEnabled) {
+        disableAudio();
+        soundToggle.textContent = 'sound off';
+      } else {
+        enableAudio();
+        soundToggle.textContent = 'sound on';
+      }
+    });
+
+    // Mute when tab is hidden
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && audioEnabled) {
+        disableAudio();
+        soundToggle.textContent = 'sound off';
+      }
+    });
 
     // ============================================================
     // GO
