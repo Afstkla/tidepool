@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Murmur</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0a0f; }
+    canvas { display: block; cursor: default; }
+    #overlay {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      z-index: 10;
+      color: rgba(255, 255, 255, 0.4);
+      font: 11px/1.6 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      pointer-events: none;
+      user-select: none;
+      text-shadow: 0 0 8px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 1);
+    }
+    #overlay .resonance {
+      font: italic 13px/1.6 Georgia, 'Times New Roman', serif;
+      color: rgba(255, 255, 255, 0.55);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="overlay"></div>
+  <script>
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+    const BG_COLOR = '#0a0a0f';
+    const PARTICLE_COUNT = 200;
+    const COUPLING_K = 2.0;
+    const FREQ_SPREAD = 0.3;
+    const NEIGHBOR_RANGE = 80;
+    const DISTURB_RADIUS = 120;
+    const BASE_SPEED = 0.2;
+    const WANDER_STRENGTH = 0.015;
+    const GLOW_RADIUS = 14;
+    const HASH_CELL_SIZE = 80;
+    const TARGET_FPS = 60;
+
+    // Visual
+    const HUE_MIN = 25;
+    const HUE_MAX = 45;
+    const LINE_OPACITY_MAX = 0.08;
+    const PHASE_COHERENCE_THRESHOLD = 0.85; // cos(phase_diff) > this to draw line
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
+    function clamp(v, min, max) {
+      return v < min ? min : v > max ? max : v;
+    }
+
+    function randRange(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function wrapCoord(val, max) {
+      return ((val % max) + max) % max;
+    }
+
+    function toroidalDelta(from, to, wrap) {
+      let d = to - from;
+      if (d > wrap / 2) d -= wrap;
+      if (d < -wrap / 2) d += wrap;
+      return d;
+    }
+
+    function toroidalDist(x1, y1, x2, y2, w, h) {
+      const dx = toroidalDelta(x1, x2, w);
+      const dy = toroidalDelta(y1, y2, h);
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // ============================================================
+    // SPATIAL HASH
+    // ============================================================
+    class SpatialHash {
+      constructor(cellSize) {
+        this.cellSize = cellSize;
+        this.grid = new Map();
+      }
+
+      clear() {
+        this.grid.clear();
+      }
+
+      _key(x, y) {
+        const col = Math.floor(x / this.cellSize);
+        const row = Math.floor(y / this.cellSize);
+        return (col << 16) ^ row;
+      }
+
+      insert(obj) {
+        const key = this._key(obj.x, obj.y);
+        let bucket = this.grid.get(key);
+        if (!bucket) {
+          bucket = [];
+          this.grid.set(key, bucket);
+        }
+        bucket.push(obj);
+      }
+
+      query(x, y, range, w, h) {
+        const results = [];
+        const cells = Math.ceil(range / this.cellSize);
+        const col0 = Math.floor(x / this.cellSize);
+        const row0 = Math.floor(y / this.cellSize);
+        const maxCol = Math.ceil(w / this.cellSize);
+        const maxRow = Math.ceil(h / this.cellSize);
+
+        for (let dc = -cells; dc <= cells; dc++) {
+          for (let dr = -cells; dr <= cells; dr++) {
+            const c = ((col0 + dc) % maxCol + maxCol) % maxCol;
+            const r = ((row0 + dr) % maxRow + maxRow) % maxRow;
+            const key = (c << 16) ^ r;
+            const bucket = this.grid.get(key);
+            if (bucket) {
+              for (let i = 0; i < bucket.length; i++) {
+                results.push(bucket[i]);
+              }
+            }
+          }
+        }
+        return results;
+      }
+    }
+
+    // ============================================================
+    // PARTICLE CLASS
+    // ============================================================
+    class Particle {
+      constructor(x, y, w, h) {
+        this.x = x;
+        this.y = y;
+        this.phase = Math.random() * Math.PI * 2;
+        this.naturalFreq = (Math.random() - 0.5) * 2 * FREQ_SPREAD + 1.0; // centered around 1.0 rad/s
+        this.hue = randRange(HUE_MIN, HUE_MAX);
+        this.size = randRange(2.5, 4.5);
+        this.vx = (Math.random() - 0.5) * BASE_SPEED;
+        this.vy = (Math.random() - 0.5) * BASE_SPEED;
+        this.wanderAngle = Math.random() * Math.PI * 2;
+      }
+
+      update(dt, neighbors, w, h) {
+        // Kuramoto coupling
+        let coupling = 0;
+        let neighborCount = 0;
+
+        for (let i = 0; i < neighbors.length; i++) {
+          const n = neighbors[i];
+          if (n === this) continue;
+          const dist = toroidalDist(this.x, this.y, n.x, n.y, w, h);
+          if (dist < NEIGHBOR_RANGE && dist > 0) {
+            // Distance-weighted coupling: stronger when closer
+            const weight = 1.0 - (dist / NEIGHBOR_RANGE);
+            coupling += weight * Math.sin(n.phase - this.phase);
+            neighborCount++;
+          }
+        }
+
+        // Phase update: dφ/dt = ω + K * (1/N) * Σ sin(φ_j - φ_i)
+        const effectiveK = neighborCount > 0 ? COUPLING_K / neighborCount : 0;
+        this.phase += (this.naturalFreq + effectiveK * coupling) * dt;
+        // Keep phase in [0, 2π)
+        this.phase = ((this.phase % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+
+        // Brownian drift with wander
+        this.wanderAngle += (Math.random() - 0.5) * WANDER_STRENGTH * 60 * dt;
+        this.vx += Math.cos(this.wanderAngle) * WANDER_STRENGTH * dt * 60;
+        this.vy += Math.sin(this.wanderAngle) * WANDER_STRENGTH * dt * 60;
+
+        // Damping
+        const damping = Math.pow(0.98, dt * 60);
+        this.vx *= damping;
+        this.vy *= damping;
+
+        // Speed limit
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        const maxSpeed = BASE_SPEED * 2;
+        if (speed > maxSpeed) {
+          this.vx = (this.vx / speed) * maxSpeed;
+          this.vy = (this.vy / speed) * maxSpeed;
+        }
+
+        // Move
+        this.x = wrapCoord(this.x + this.vx * dt * 60, w);
+        this.y = wrapCoord(this.y + this.vy * dt * 60, h);
+      }
+
+      brightness() {
+        // Brightest at phase 0/2π, dimmest at phase π
+        return (Math.cos(this.phase) + 1) / 2; // 0..1
+      }
+    }
+
+    // ============================================================
+    // MAIN
+    // ============================================================
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+
+    let W, H;
+    const particles = [];
+    const hash = new SpatialHash(HASH_CELL_SIZE);
+
+    let mouseX = -1000, mouseY = -1000;
+    let mouseDown = false;
+
+    function resize() {
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = W;
+      canvas.height = H;
+    }
+
+    function init() {
+      resize();
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        particles.push(new Particle(
+          Math.random() * W,
+          Math.random() * H,
+          W, H
+        ));
+      }
+    }
+
+    // Precompute glow texture
+    function createGlowCanvas(radius, hue, brightness) {
+      const size = radius * 2;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const gc = c.getContext('2d');
+      const grad = gc.createRadialGradient(radius, radius, 0, radius, radius, radius);
+      const alpha = 0.15 + brightness * 0.7;
+      const saturation = 60 + brightness * 30;
+      const lightness = 30 + brightness * 50;
+      grad.addColorStop(0, `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`);
+      grad.addColorStop(0.3, `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha * 0.5})`);
+      grad.addColorStop(1, `hsla(${hue}, ${saturation}%, ${lightness}%, 0)`);
+      gc.fillStyle = grad;
+      gc.fillRect(0, 0, size, size);
+      return c;
+    }
+
+    function computeOrderParameter() {
+      // Kuramoto order parameter: r = |1/N Σ e^(iφ)|
+      let sumCos = 0, sumSin = 0;
+      for (let i = 0; i < particles.length; i++) {
+        sumCos += Math.cos(particles[i].phase);
+        sumSin += Math.sin(particles[i].phase);
+      }
+      sumCos /= particles.length;
+      sumSin /= particles.length;
+      return Math.sqrt(sumCos * sumCos + sumSin * sumSin);
+    }
+
+    // ============================================================
+    // RENDER
+    // ============================================================
+    let lastTime = 0;
+    let overlayTimer = 0;
+
+    function frame(timestamp) {
+      requestAnimationFrame(frame);
+
+      if (!lastTime) { lastTime = timestamp; return; }
+      const rawDt = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+      const dt = Math.min(rawDt, 1 / 20); // cap to prevent spiral
+
+      // Clear with slight trail
+      ctx.fillStyle = 'rgba(10, 10, 15, 0.3)';
+      ctx.fillRect(0, 0, W, H);
+
+      // Build spatial hash
+      hash.clear();
+      for (let i = 0; i < particles.length; i++) {
+        hash.insert(particles[i]);
+      }
+
+      // Update particles
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const neighbors = hash.query(p.x, p.y, NEIGHBOR_RANGE, W, H);
+        p.update(dt, neighbors, W, H);
+      }
+
+      // Draw connection lines between synchronized neighbors
+      ctx.lineWidth = 1;
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const neighbors = hash.query(p.x, p.y, NEIGHBOR_RANGE, W, H);
+
+        for (let j = 0; j < neighbors.length; j++) {
+          const n = neighbors[j];
+          if (n === p) continue;
+          // Avoid drawing each line twice
+          if (particles.indexOf(n) <= i) continue;
+
+          const dist = toroidalDist(p.x, p.y, n.x, n.y, W, H);
+          if (dist > NEIGHBOR_RANGE || dist === 0) continue;
+
+          const phaseDiff = Math.cos(p.phase - n.phase);
+          if (phaseDiff < PHASE_COHERENCE_THRESHOLD) continue;
+
+          // Line opacity based on coherence and distance
+          const coherence = (phaseDiff - PHASE_COHERENCE_THRESHOLD) / (1 - PHASE_COHERENCE_THRESHOLD);
+          const distFade = 1 - (dist / NEIGHBOR_RANGE);
+          const opacity = coherence * distFade * LINE_OPACITY_MAX;
+
+          const avgBrightness = (p.brightness() + n.brightness()) / 2;
+          const hue = (p.hue + n.hue) / 2;
+          const lightness = 40 + avgBrightness * 40;
+
+          // Handle toroidal wrapping for line drawing
+          const dx = toroidalDelta(p.x, n.x, W);
+          const dy = toroidalDelta(p.y, n.y, H);
+
+          ctx.strokeStyle = `hsla(${hue}, 70%, ${lightness}%, ${opacity})`;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x + dx, p.y + dy);
+          ctx.stroke();
+        }
+      }
+
+      // Draw particles
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const b = p.brightness();
+
+        // Hover effect
+        let hoverBoost = 0;
+        if (mouseX >= 0 && mouseY >= 0) {
+          const md = toroidalDist(p.x, p.y, mouseX, mouseY, W, H);
+          if (md < 80) {
+            hoverBoost = (1 - md / 80) * 0.3;
+          }
+        }
+
+        const totalBrightness = clamp(b + hoverBoost, 0, 1);
+
+        // Core dot
+        const alpha = 0.2 + totalBrightness * 0.8;
+        const saturation = 50 + totalBrightness * 40;
+        const lightness = 30 + totalBrightness * 55;
+        ctx.fillStyle = `hsla(${p.hue}, ${saturation}%, ${lightness}%, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * (0.7 + totalBrightness * 0.3), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Glow
+        if (totalBrightness > 0.3) {
+          const glowAlpha = (totalBrightness - 0.3) * 0.15;
+          const glowSize = GLOW_RADIUS * (0.5 + totalBrightness * 0.5);
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowSize);
+          grad.addColorStop(0, `hsla(${p.hue}, ${saturation}%, ${lightness}%, ${glowAlpha})`);
+          grad.addColorStop(1, `hsla(${p.hue}, ${saturation}%, ${lightness}%, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, glowSize, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Overlay update (throttled)
+      overlayTimer += dt;
+      if (overlayTimer > 0.25) {
+        overlayTimer = 0;
+        const r = computeOrderParameter();
+        let html = `murmur<br>${particles.length} voices<br>sync: ${r.toFixed(2)}`;
+        if (r > 0.7) {
+          html += `<div class="resonance">~ resonance ~</div>`;
+        }
+        overlay.innerHTML = html;
+      }
+    }
+
+    // ============================================================
+    // INPUT
+    // ============================================================
+    canvas.addEventListener('mousemove', (e) => {
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      mouseX = -1000;
+      mouseY = -1000;
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+      mouseDown = true;
+      disturb(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      mouseDown = false;
+    });
+
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      disturb(t.clientX, t.clientY);
+    }, { passive: false });
+
+    function disturb(x, y) {
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const dist = toroidalDist(p.x, p.y, x, y, W, H);
+        if (dist < DISTURB_RADIUS) {
+          const intensity = 1 - (dist / DISTURB_RADIUS);
+          // Scramble phase proportional to proximity
+          p.phase += (Math.random() - 0.5) * Math.PI * 2 * intensity;
+          p.phase = ((p.phase % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+          // Small push away from click
+          const dx = toroidalDelta(x, p.x, W);
+          const dy = toroidalDelta(y, p.y, H);
+          const d = Math.sqrt(dx * dx + dy * dy) || 1;
+          p.vx += (dx / d) * intensity * 0.5;
+          p.vy += (dy / d) * intensity * 0.5;
+        }
+      }
+    }
+
+    window.addEventListener('resize', resize);
+
+    // ============================================================
+    // GO
+    // ============================================================
+    init();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
