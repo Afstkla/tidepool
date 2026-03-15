@@ -36,12 +36,88 @@
       border-color: rgba(255, 255, 255, 0.3);
       color: rgba(255, 255, 255, 0.6);
     }
+    #info-btn {
+      position: fixed;
+      bottom: 16px;
+      right: 100px;
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.35);
+      font: 11px 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: all 0.3s;
+      z-index: 20;
+    }
+    #info-btn:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+      color: rgba(255, 255, 255, 0.6);
+    }
+    #info-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(10, 10, 15, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #info-overlay.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+    #info-panel {
+      max-width: 500px;
+      width: 90%;
+      padding: 0 24px;
+    }
+    #info-panel .info-section {
+      margin-bottom: 28px;
+    }
+    #info-panel .info-section:last-child {
+      margin-bottom: 0;
+    }
+    #info-panel .info-header {
+      font: 11px 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      color: rgba(255, 255, 255, 0.5);
+      text-transform: lowercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    #info-panel .info-body {
+      font: italic 15px/1.7 Georgia, 'Times New Roman', serif;
+      color: rgba(255, 255, 255, 0.35);
+    }
+    #info-panel .info-body.poetic {
+      font-size: 17px;
+      color: rgba(255, 255, 255, 0.4);
+    }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
   <div id="overlay"></div>
+  <button id="info-btn">?</button>
   <button id="sound-toggle">sound off</button>
+  <div id="info-overlay">
+    <div id="info-panel">
+      <div class="info-section">
+        <div class="info-body poetic">A dark ocean full of creatures that no one designed.</div>
+      </div>
+      <div class="info-section">
+        <div class="info-header">how it works</div>
+        <div class="info-body">Each creature carries a genome of five genes — hue, size, speed, sociability, and perception. They seek food, reproduce when they have enough energy, and pass mutated copies of their genes to offspring. Over generations, the population evolves to fit its environment. The ambient sound is generated from the creatures' genetics.</div>
+      </div>
+      <div class="info-section">
+        <div class="info-header">interact</div>
+        <div class="info-body">Click anywhere to drop food. Toggle sound with the button below.</div>
+      </div>
+    </div>
+  </div>
   <script>
     // ============================================================
     // CONSTANTS
@@ -837,6 +913,20 @@
       const h = window.innerHeight;
       renderer.init(w, h);
       sim.init(w, h);
+
+      // Info overlay toggle
+      const infoBtn = document.getElementById('info-btn');
+      const infoOverlay = document.getElementById('info-overlay');
+      infoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        infoOverlay.classList.toggle('visible');
+      });
+      infoOverlay.addEventListener('click', (e) => {
+        if (e.target === infoOverlay) infoOverlay.classList.remove('visible');
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') infoOverlay.classList.remove('visible');
+      });
 
       // Sound toggle
       const soundBtn = document.getElementById('sound-toggle');

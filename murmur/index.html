@@ -24,11 +24,87 @@
       color: rgba(255, 255, 255, 0.55);
       margin-top: 2px;
     }
+    #info-btn {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.35);
+      font: 11px 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: all 0.3s;
+      z-index: 20;
+    }
+    #info-btn:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+      color: rgba(255, 255, 255, 0.6);
+    }
+    #info-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(10, 10, 15, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #info-overlay.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+    #info-panel {
+      max-width: 500px;
+      width: 90%;
+      padding: 0 24px;
+    }
+    #info-panel .info-section {
+      margin-bottom: 28px;
+    }
+    #info-panel .info-section:last-child {
+      margin-bottom: 0;
+    }
+    #info-panel .info-header {
+      font: 11px 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      color: rgba(255, 255, 255, 0.5);
+      text-transform: lowercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    #info-panel .info-body {
+      font: italic 15px/1.7 Georgia, 'Times New Roman', serif;
+      color: rgba(255, 255, 255, 0.35);
+    }
+    #info-panel .info-body.poetic {
+      font-size: 17px;
+      color: rgba(255, 255, 255, 0.4);
+    }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
   <div id="overlay"></div>
+  <button id="info-btn">?</button>
+  <div id="info-overlay">
+    <div id="info-panel">
+      <div class="info-section">
+        <div class="info-body poetic">Two hundred voices, each singing alone, slowly finding each other.</div>
+      </div>
+      <div class="info-section">
+        <div class="info-header">how it works</div>
+        <div class="info-body">Each particle is an oscillator with its own natural rhythm. When near other particles, their phases pull toward alignment — a model called Kuramoto coupling. Isolated particles flicker independently; clusters begin to breathe together; eventually the whole field synchronizes into a single pulse. The sync meter shows how coherent they are. Lines connect particles that are in phase.</div>
+      </div>
+      <div class="info-section">
+        <div class="info-header">interact</div>
+        <div class="info-body">Click to scramble the rhythms nearby and watch synchrony rebuild.</div>
+      </div>
+    </div>
+  </div>
   <script>
     // ============================================================
     // CONSTANTS
@@ -399,6 +475,20 @@
     // ============================================================
     // INPUT
     // ============================================================
+    // Info overlay toggle
+    const infoBtn = document.getElementById('info-btn');
+    const infoOverlay = document.getElementById('info-overlay');
+    infoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      infoOverlay.classList.toggle('visible');
+    });
+    infoOverlay.addEventListener('click', (e) => {
+      if (e.target === infoOverlay) infoOverlay.classList.remove('visible');
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') infoOverlay.classList.remove('visible');
+    });
+
     canvas.addEventListener('mousemove', (e) => {
       mouseX = e.clientX;
       mouseY = e.clientY;
