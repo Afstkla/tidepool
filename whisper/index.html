@@ -27,7 +27,7 @@
     }
     #input-area {
       position: fixed;
-      bottom: 50px;
+      bottom: 80px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 20;
@@ -59,14 +59,14 @@
       margin-top: 6px;
     }
     #input-error {
-      font: italic 11px/1.6 Georgia, 'Times New Roman', serif;
-      color: rgba(255, 140, 140, 0.5);
+      font: italic 12px/1.6 Georgia, 'Times New Roman', serif;
+      color: rgba(255, 130, 130, 0.7);
       margin-top: 6px;
       min-height: 18px;
     }
     #contributed {
       position: fixed;
-      bottom: 50px;
+      bottom: 80px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 20;
@@ -391,9 +391,12 @@
     }
 
     function showError(msg) {
+      console.log('Whisper error:', msg);
       const el = document.getElementById('input-error');
+      const hint = document.getElementById('input-hint');
       el.textContent = msg;
-      setTimeout(() => { el.textContent = ''; }, 4000);
+      hint.style.display = 'none';
+      setTimeout(() => { el.textContent = ''; hint.style.display = ''; }, 5000);
     }
 
     // ============================================================
